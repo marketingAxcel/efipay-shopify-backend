@@ -1,73 +1,74 @@
 // api/create-efipay-payment.js
-const axios = require("axios");
 
-module.exports = async function (req, res) {
-  if (req.method !== "POST") {
-    return res.status(405).json({ error: "Método no permitido" });
+module.exports = async (req, res) => {
+  if (req.method !== 'POST') {
+    res.statusCode = 405;
+    return res.json({ error: 'Method not allowed' });
   }
 
   try {
-    const { orderId, amount, customer } = req.body;
+    const { orderId, amount, currency, customer } = req.body;
 
-    if (!orderId || !amount || !customer) {
-      return res.status(400).json({
-        success: false,
-        error: "Faltan campos: orderId, amount o customer"
-      });
+    if (!orderId || !amount) {
+      res.statusCode = 400;
+      return res.json({ error: 'orderId y amount son obligatorios' });
     }
 
-    // Mapeamos los datos del cliente que mandará Shopify
-    const payer = {
-      name: customer.name,
-      address_1: customer.address1,
-      address_2: customer.address2 || "",
-      city: customer.city,
-      state: customer.state,
-      zip_code: customer.zip,
-      country: customer.country || "COL"
-    };
+    const baseUrl = process.env.EFIPAY_BASE_URL;    // https://app.efipay.co/api/v1
+    const apiToken = process.env.EFIPAY_API_TOKEN;  // tu token Efipay
+    const officeId = process.env.EFIPAY_OFFICE_ID;  // 2052
 
-    const efipayResponse = await axios.post(
-      `${process.env.EFIPAY_BASE_URL}/payment/generate-payment`,
-      {
-        payment: {
-          amount: Math.round(amount),        // en COP
-          currency: "COP",
-          currency_type: "COP",
-          description: `Pedido Shopify #${orderId}`,
-          order_id: String(orderId),
-          checkout_type: "redirect"
-        },
-        advanced_options: {
-          customer_payer: payer
-        },
-        office: Number(process.env.EFIPAY_OFFICE_ID)
+    // 👇 Ajusta el endpoint exacto según tu integración actual
+    const url = `${baseUrl}/checkout`;
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiToken}`,
+        'Content-Type': 'application/json',
       },
-      {
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "application/json",
-          Authorization: `Bearer ${process.env.EFIPAY_API_TOKEN}`
-        }
-      }
-    );
+      body: JSON.stringify({
+        amount,                        // ajusta formato (enteros/centavos) según Efipay
+        currency: currency || 'COP',
+        description: `Pedido Shopify #${orderId}`,
+        office_id: Number(officeId),
+        customer: {
+          name: customer?.name,
+          email: customer?.email,
+        },
+        // aquí puedes añadir los demás campos que YA usas hoy con Efipay
+      }),
+    });
 
-    const data = efipayResponse.data;
+    if (!response.ok) {
+      const text = await response.text();
+      console.error('Error respuesta Efipay:', text);
+      res.statusCode = 500;
+      return res.json({ error: 'No se pudo crear el pago en Efipay' });
+    }
 
-    return res.status(200).json({
-      success: true,
-      paymentId: data.payment_id,
-      url: data.url
+    const data = await response.json();
+
+    // 👇 Ajusta a la respuesta REAL de Efipay
+    const paymentUrl = data?.data?.url || data?.checkout_url;
+    const transactionId = data?.data?.id || data?.transaction_id;
+
+    if (!paymentUrl) {
+      res.statusCode = 500;
+      return res.json({ error: 'Efipay no devolvió URL de pago' });
+    }
+
+    // TODO: aquí idealmente guardas en una BD:
+    // { shopifyOrderId: orderId, efipayTransactionId: transactionId, status: 'pending' }
+
+    res.statusCode = 200;
+    return res.json({
+      paymentUrl,
+      efipayTransactionId: transactionId,
     });
   } catch (error) {
-    console.error(
-      "Error creando pago en EfiPay:",
-      error.response?.data || error.message
-    );
-
-    return res.status(500).json({
-      success: false,
-      error: "No se pudo generar el pago en EfiPay"
-    });
+    console.error('Error en create-efipay-payment:', error);
+    res.statusCode = 500;
+    return res.json({ error: 'Error interno creando pago' });
   }
 };
