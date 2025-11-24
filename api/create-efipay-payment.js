@@ -2,19 +2,18 @@
 
 export default async function handler(req, res) {
   // ---------------------------------------------
-  // 🔥 CORS – PERMITIR LLAMADAS DESDE SHOPIFY
+  // 🔥 CORS – permitir llamadas desde la tienda Shopify
   // ---------------------------------------------
-  res.setHeader(
-    "Access-Control-Allow-Origin",
-    "https://muyv4p-em.myshopify.com"
-  );
+  const ALLOWED_ORIGIN = "https://mvyu4p-em.myshopify.com";
+
+  res.setHeader("Access-Control-Allow-Origin", ALLOWED_ORIGIN);
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader(
     "Access-Control-Allow-Headers",
     "Content-Type, Authorization"
   );
 
-  // Preflight
+  // Preflight (OPTIONS)
   if (req.method === "OPTIONS") {
     return res.status(200).end();
   }
@@ -36,7 +35,7 @@ export default async function handler(req, res) {
         .json({ error: "orderId y amount son obligatorios." });
     }
 
-    const EFIPAY_TOKEN = process.env.EFIPAY_API_TOKEN;
+    const EFIPAY_TOKEN = process.env.EFIPAY_API_TOKEN;   // ACCESS_TOKEN de Efipay
     const BASE_URL =
       process.env.EFIPAY_BASE_URL || "https://sag.efipay.co/api/v1";
     const OFFICE_ID = process.env.EFIPAY_OFFICE_ID;
@@ -50,27 +49,38 @@ export default async function handler(req, res) {
         .json({ error: "Configuración de Efipay incompleta en el backend." });
     }
 
+    // Descripción que se verá en Efipay
     const description = `Pedido ${orderId} - Paytton Tires`;
 
-    // Payload para Efipay
+    // Payload según doc de "Transacciones" (generate-payment)
     const payload = {
       payment: {
         description,
-        amount,
-        currency_type: currency,
+        amount,                  // número, ej: 120000
+        currency_type: currency, // 'COP'
         checkout_type: "redirect",
       },
       advanced_options: {
+        // referencia para que luego puedas identificar la trx
         references: [String(orderId)],
+
+        // URLs de retorno que mostrará Efipay según el resultado
         result_urls: {
-          approved: "https://myu4p-em.myshopify.com/pages/pago-exitoso",
-          rejected: "https://myu4p-em.myshopify.com/pages/pago-rechazado",
-          pending: "https://myu4p-em.myshopify.com/pages/pago-pendiente",
+          approved:
+            "https://mvyu4p-em.myshopify.com/pages/pago-exitoso",
+          rejected:
+            "https://mvyu4p-em.myshopify.com/pages/pago-rechazado",
+          pending:
+            "https://mvyu4p-em.myshopify.com/pages/pago-pendiente",
+          // webhook opcional
           webhook:
             "https://efipay-shopify-backend.vercel.app/api/efipay-webhook",
         },
+
         has_comments: false,
       },
+
+      // sucursal (office) que te muestra Efipay en el panel
       office: Number(OFFICE_ID),
     };
 
@@ -96,7 +106,7 @@ export default async function handler(req, res) {
     try {
       data = JSON.parse(raw);
     } catch (e) {
-      console.error("No se pudo parsear JSON de Efipay:", e);
+      console.error("No se pudo parsear la respuesta JSON de Efipay:", e);
       return res.status(500).json({
         error: "Respuesta inválida de Efipay",
         status: response.status,
@@ -104,6 +114,7 @@ export default async function handler(req, res) {
       });
     }
 
+    // En redirect debemos recibir { saved, payment_id, url }
     if (!response.ok || !data.url) {
       console.error("Error al generar pago en Efipay:", data);
       return res.status(500).json({
@@ -113,7 +124,7 @@ export default async function handler(req, res) {
       });
     }
 
-    // 🎉 Éxito: devolver URL de pago
+    // ✅ Devolvemos el link de pago a Shopify
     return res.status(200).json({
       paymentUrl: data.url,
       paymentId: data.payment_id,
