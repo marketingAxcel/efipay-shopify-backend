@@ -114,7 +114,7 @@ export default async function handler(req, res) {
       });
     }
 
-    // En redirect debemos recibir { saved, payment_id, url }
+    
     if (!response.ok || !data.url) {
       console.error("Error al generar pago en Efipay:", data);
       return res.status(500).json({
