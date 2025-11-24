@@ -1,6 +1,6 @@
 // api/efipay-webhook.js
 
-// Función utilitaria: recorre un objeto y llama a cb(key, value) por cada par
+// Recorre un objeto profundo y ejecuta cb(key, value)
 function deepScan(obj, cb) {
   if (!obj || typeof obj !== 'object') return;
   for (const key of Object.keys(obj)) {
@@ -23,8 +23,7 @@ export default async function handler(req, res) {
     if (typeof event === 'string') {
       try {
         event = JSON.parse(event);
-      } catch (e) {
-        console.error('No se pudo parsear body string como JSON:', e);
+      } catch {
         event = {};
       }
     }
@@ -32,9 +31,7 @@ export default async function handler(req, res) {
     console.log('=== EVENTO RECIBIDO DE EFIPAY ===');
     console.log(JSON.stringify(event, null, 2));
 
-    // --------------------------
-    // 1) Detectar STATUS APROBADO
-    // --------------------------
+    // 1) STATUS
     let rawStatus = null;
     deepScan(event, (key, value) => {
       if (!rawStatus && key === 'status' && typeof value === 'string') {
@@ -44,52 +41,36 @@ export default async function handler(req, res) {
 
     const approvedStatuses = ['approved', 'aprobado', 'paid', 'pagado', 'success', 'succeeded'];
     const isApproved = approvedStatuses.includes(rawStatus || '');
-
-    console.log('STATUS DETECTADO:', rawStatus);
-    console.log('¿ES APROBADO?:', isApproved);
+    console.log('STATUS DETECTADO:', rawStatus, '→ aprobado?:', isApproved);
 
     if (!isApproved) {
       console.log('Pago no aprobado. No se actualiza Shopify.');
       return res.status(200).json({ ok: true, approved: false });
     }
 
-    // --------------------------
-    // 2) Detectar MONTO
-    // --------------------------
+    // 2) MONTO
     let amount = null;
     deepScan(event, (key, value) => {
       if (amount != null) return;
-      const keyLower = key.toLowerCase();
-      if (
-        (keyLower === 'total' || keyLower === 'amount' || keyLower === 'value') &&
-        typeof value === 'number' &&
-        value > 0
-      ) {
+      const k = key.toLowerCase();
+      if (['total', 'amount', 'value'].includes(k) && typeof value === 'number' && value > 0) {
         amount = value;
       }
     });
-
     console.log('MONTO DETECTADO:', amount);
 
-    // --------------------------
-    // 3) Detectar NÚMERO DE PEDIDO
-    //    - buscamos textos tipo "Pedido 1007 - Paytton Tires"
-    // --------------------------
+    // 3) NÚMERO DE PEDIDO (order_number)
     let referenceOrderId = null;
-
-    // primero textos que contengan "Pedido"
     deepScan(event, (key, value) => {
       if (referenceOrderId) return;
       if (typeof value === 'string' && value.toLowerCase().includes('pedido')) {
         const match = value.match(/(\d+)/);
-        if (match) {
-          referenceOrderId = match[1]; // "1007"
-        }
+        if (match) referenceOrderId = match[1]; // "1008"
       }
     });
 
-    // si aún no encontramos, cualquier string que sea solo dígitos y de pocos caracteres
     if (!referenceOrderId) {
+      // fallback: cualquier string solo dígitos
       deepScan(event, (key, value) => {
         if (referenceOrderId) return;
         if (typeof value === 'string' && /^\d{3,10}$/.test(value)) {
@@ -107,72 +88,71 @@ export default async function handler(req, res) {
         .json({ error: 'Falta referencia o monto para actualizar Shopify', referenceOrderId, amount });
     }
 
-    // --------------------------
-    // 4) Llamar a Shopify
-    // --------------------------
-    const shopDomain = process.env.SHOPIFY_STORE_DOMAIN;         // ej: mvyu4p-em.myshopify.com
-    const adminToken = process.env.SHOPIFY_ADMIN_API_TOKEN;      // token admin
-    const apiVersion = process.env.SHOPIFY_ADMIN_API_VERSION || '2024-01';
+    const orderNumberInt = Number(referenceOrderId);
+
+    // 4) CONFIG SHOPIFY
+    const shopDomain = process.env.SHOPIFY_STORE_DOMAIN; // mvyu4p-em.myshopify.com
+    const adminToken = process.env.SHOPIFY_ADMIN_API_TOKEN;
+    const apiVersion = process.env.SHOPIFY_ADMIN_API_VERSION || '2024-10'; // versión más nueva
 
     if (!shopDomain || !adminToken) {
       console.error('Faltan SHOPIFY_STORE_DOMAIN o SHOPIFY_ADMIN_API_TOKEN');
       return res.status(500).json({ error: 'Configuración de Shopify incompleta en backend' });
     }
 
-    let orderName = String(referenceOrderId).trim();
-    if (!orderName.startsWith('#')) {
-      orderName = `#${orderName}`;
-    }
+    // 5) Buscar pedido POR order_number en los pedidos recientes
+    //   Pedimos los últimos 100 pedidos (status:any) y filtramos en código
+    const listUrl = `https://${shopDomain}/admin/api/${apiVersion}/orders.json?status=any&limit=100&order=created_at+desc&fields=id,name,order_number,financial_status,total_price`;
+    console.log('Buscando pedido en Shopify (lista reciente):', listUrl);
 
-    // 4.1 Buscar pedido por name
-    const searchUrl = `https://${shopDomain}/admin/api/${apiVersion}/orders.json?name=${encodeURIComponent(
-      orderName
-    )}`;
-
-    console.log('Buscando pedido en Shopify por name:', orderName, '→', searchUrl);
-
-    const searchResp = await fetch(searchUrl, {
+    const listResp = await fetch(listUrl, {
       headers: {
         'X-Shopify-Access-Token': adminToken,
         'Content-Type': 'application/json'
       }
     });
 
-    const searchRaw = await searchResp.text();
-    console.log('Respuesta cruda de Shopify (search order):', searchRaw);
+    const listRaw = await listResp.text();
+    console.log('Respuesta cruda de Shopify (lista pedidos):', listRaw);
 
-    if (!searchResp.ok) {
-      console.error('Error al buscar pedido en Shopify:', searchResp.status, searchRaw);
-      return res.status(500).json({ error: 'No se pudo buscar el pedido en Shopify', raw: searchRaw });
+    if (!listResp.ok) {
+      console.error('Error al listar pedidos en Shopify:', listResp.status, listRaw);
+      return res.status(500).json({ error: 'No se pudo listar pedidos en Shopify', raw: listRaw });
     }
 
-    let searchData;
+    let listData;
     try {
-      searchData = JSON.parse(searchRaw);
+      listData = JSON.parse(listRaw);
     } catch (e) {
-      console.error('No se pudo parsear JSON de búsqueda de pedidos:', e);
-      return res.status(500).json({ error: 'Respuesta inválida de Shopify al buscar pedido' });
+      console.error('No se pudo parsear JSON de lista de pedidos:', e);
+      return res.status(500).json({ error: 'Respuesta inválida de Shopify al listar pedidos' });
     }
 
-    const orders = searchData.orders || [];
-    if (!orders.length) {
-      console.error('No se encontró ningún pedido con name', orderName);
-      return res.status(404).json({ error: `Pedido no encontrado en Shopify para name ${orderName}` });
+    const orders = listData.orders || [];
+    const order = orders.find(o => o.order_number === orderNumberInt);
+
+    if (!order) {
+      console.error('No se encontró pedido con order_number', orderNumberInt);
+      return res.status(404).json({ error: `Pedido no encontrado para order_number ${orderNumberInt}` });
     }
 
-    const order = orders[0];
-    const orderId = order.id;
-    console.log('Pedido encontrado en Shopify:', orderId, order.name, 'financial_status:', order.financial_status);
+    console.log(
+      'Pedido encontrado en Shopify:',
+      order.id,
+      order.name,
+      'order_number:',
+      order.order_number,
+      'financial_status:',
+      order.financial_status
+    );
 
-    // si ya está pagado, no duplicamos
     if (order.financial_status === 'paid') {
-      console.log('Pedido ya está marcado como pagado en Shopify. No se crea transacción nueva.');
+      console.log('Pedido ya está marcado como pagado. No se crea transacción nueva.');
       return res.status(200).json({ ok: true, alreadyPaid: true });
     }
 
-    // 4.2 Crear transacción de venta ENVIANDO EL MONTO
-    const txUrl = `https://${shopDomain}/admin/api/${apiVersion}/orders/${orderId}/transactions.json`;
-
+    // 6) Crear transacción de venta
+    const txUrl = `https://${shopDomain}/admin/api/${apiVersion}/orders/${order.id}/transactions.json`;
     const txPayload = {
       transaction: {
         kind: 'sale',
