@@ -1,12 +1,12 @@
 // api/create-efipay-payment.js
 
 module.exports = async (req, res) => {
-  // 🔹 CORS: permitir llamadas desde tu tienda Shopify
-  res.setHeader('Access-Control-Allow-Origin', 'https://myu4p-em.myshopify.com');
+  // ⭐ CORS abierto para que no haya líos con dominio
+  res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
-  // Responder rápido las preflight OPTIONS
+  // Preflight
   if (req.method === 'OPTIONS') {
     res.statusCode = 200;
     return res.end();
@@ -18,12 +18,18 @@ module.exports = async (req, res) => {
   }
 
   try {
-    // En Vercel, req.body puede venir como string si es JSON
+    // Asegurarnos de parsear bien el body
     let body = req.body;
+    if (!body) {
+      // En algunos runtimes viene en el stream, pero en Vercel normalmente no pasa.
+      // Por si acaso, lo dejamos así.
+      body = {};
+    }
     if (typeof body === 'string') {
       try {
         body = JSON.parse(body);
       } catch (e) {
+        console.error('Error parseando body como JSON:', e);
         body = {};
       }
     }
@@ -50,13 +56,13 @@ module.exports = async (req, res) => {
       return res.json({ error: 'Falta EFIPAY_API_TOKEN en las variables de entorno' });
     }
 
-    // 👉 URL del webhook (ya desplegado en Vercel)
     const webhookUrl = 'https://efipay-shopify-backend.vercel.app/api/efipay-webhook';
 
     const payload = {
       amount: amountNumber,
       currency_type: currency || 'COP',
-      office_id: officeId ? Number(officeId) : undefined,
+      // office_id es opcional pero si lo tienes en env lo pasamos
+      ...(officeId ? { office_id: Number(officeId) } : {}),
       description: `Pedido Shopify #${orderId}`,
       advanced_option: {
         references: [String(orderId)],
@@ -72,6 +78,8 @@ module.exports = async (req, res) => {
       }
     };
 
+    console.log('Payload a Efipay /checkout:', JSON.stringify(payload));
+
     const response = await fetch(`${baseUrl}/checkout`, {
       method: 'POST',
       headers: {
@@ -81,15 +89,29 @@ module.exports = async (req, res) => {
       body: JSON.stringify(payload)
     });
 
+    const raw = await response.text();
+    console.log('Respuesta cruda de Efipay /checkout:', raw);
+
     if (!response.ok) {
-      const text = await response.text();
-      console.error('Error respuesta Efipay /checkout:', text);
       res.statusCode = 500;
-      return res.json({ error: 'No se pudo crear el pago en Efipay' });
+      return res.json({
+        error: 'No se pudo crear el pago en Efipay',
+        status: response.status,
+        raw
+      });
     }
 
-    const data = await response.json();
-    console.log('Respuesta Efipay /checkout:', JSON.stringify(data));
+    let data;
+    try {
+      data = JSON.parse(raw);
+    } catch (e) {
+      console.error('No se pudo parsear JSON de Efipay:', e);
+      res.statusCode = 500;
+      return res.json({
+        error: 'Respuesta de Efipay no es JSON válido',
+        raw
+      });
+    }
 
     const paymentUrl =
       data?.checkout?.payment_gateway?.url ||
@@ -105,7 +127,7 @@ module.exports = async (req, res) => {
     if (!paymentUrl) {
       res.statusCode = 500;
       return res.json({
-        error: 'Efipay no devolvió una URL de pago (revisa los logs para ver la respuesta completa)',
+        error: 'Efipay no devolvió una URL de pago (revisa raw para ver la respuesta completa)',
         raw: data
       });
     }
