@@ -48,19 +48,10 @@ export default async function handler(req, res) {
       return res.status(200).json({ ok: true, approved: false });
     }
 
-    // 2) MONTO
-    let amount = null;
-    deepScan(event, (key, value) => {
-      if (amount != null) return;
-      const k = key.toLowerCase();
-      if (['total', 'amount', 'value'].includes(k) && typeof value === 'number' && value > 0) {
-        amount = value;
-      }
-    });
-    console.log('MONTO DETECTADO:', amount);
-
-    // 3) NÚMERO DE PEDIDO (order_number)
+    // 2) NÚMERO DE PEDIDO (order_number)
     let referenceOrderId = null;
+
+    // primero textos que contengan "Pedido"
     deepScan(event, (key, value) => {
       if (referenceOrderId) return;
       if (typeof value === 'string' && value.toLowerCase().includes('pedido')) {
@@ -69,8 +60,8 @@ export default async function handler(req, res) {
       }
     });
 
+    // fallback: cualquier string únicamente numérica
     if (!referenceOrderId) {
-      // fallback: cualquier string solo dígitos
       deepScan(event, (key, value) => {
         if (referenceOrderId) return;
         if (typeof value === 'string' && /^\d{3,10}$/.test(value)) {
@@ -81,27 +72,26 @@ export default async function handler(req, res) {
 
     console.log('REFERENCIA DE PEDIDO DETECTADA:', referenceOrderId);
 
-    if (!referenceOrderId || !amount) {
-      console.error('Falta referencia o monto. No se puede actualizar Shopify.');
+    if (!referenceOrderId) {
+      console.error('Falta referencia de pedido. No se puede actualizar Shopify.');
       return res
         .status(400)
-        .json({ error: 'Falta referencia o monto para actualizar Shopify', referenceOrderId, amount });
+        .json({ error: 'Falta referencia de pedido para actualizar Shopify' });
     }
 
     const orderNumberInt = Number(referenceOrderId);
 
-    // 4) CONFIG SHOPIFY
+    // 3) CONFIG SHOPIFY
     const shopDomain = process.env.SHOPIFY_STORE_DOMAIN; // mvyu4p-em.myshopify.com
     const adminToken = process.env.SHOPIFY_ADMIN_API_TOKEN;
-    const apiVersion = process.env.SHOPIFY_ADMIN_API_VERSION || '2024-10'; // versión más nueva
+    const apiVersion = process.env.SHOPIFY_ADMIN_API_VERSION || '2024-01';
 
     if (!shopDomain || !adminToken) {
       console.error('Faltan SHOPIFY_STORE_DOMAIN o SHOPIFY_ADMIN_API_TOKEN');
       return res.status(500).json({ error: 'Configuración de Shopify incompleta en backend' });
     }
 
-    // 5) Buscar pedido POR order_number en los pedidos recientes
-    //   Pedimos los últimos 100 pedidos (status:any) y filtramos en código
+    // 4) Buscar pedido POR order_number en los pedidos recientes
     const listUrl = `https://${shopDomain}/admin/api/${apiVersion}/orders.json?status=any&limit=100&order=created_at+desc&fields=id,name,order_number,financial_status,total_price`;
     console.log('Buscando pedido en Shopify (lista reciente):', listUrl);
 
@@ -151,13 +141,13 @@ export default async function handler(req, res) {
       return res.status(200).json({ ok: true, alreadyPaid: true });
     }
 
-    // 6) Crear transacción de venta
+    // 5) Crear transacción de venta SIN amount → Shopify cobra el saldo pendiente
     const txUrl = `https://${shopDomain}/admin/api/${apiVersion}/orders/${order.id}/transactions.json`;
     const txPayload = {
       transaction: {
         kind: 'sale',
-        status: 'success',
-        amount: amount.toString()
+        status: 'success'
+        // sin amount: Shopify usa el saldo pendiente del pedido
       }
     };
 
