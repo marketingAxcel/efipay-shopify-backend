@@ -1,8 +1,20 @@
 // api/create-efipay-payment.js
 
 export default async function handler(req, res) {
+  const allowedOrigin = 'https://mvyu4p-em.myshopify.com';
+
+  // CORS básico
+  res.setHeader('Access-Control-Allow-Origin', allowedOrigin);
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
+  // Responder preflight
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
+
   if (req.method !== 'POST') {
-    res.setHeader('Allow', 'POST');
+    res.setHeader('Allow', 'POST, OPTIONS');
     return res.status(405).json({ error: 'Método no permitido' });
   }
 
@@ -26,10 +38,8 @@ export default async function handler(req, res) {
         .json({ error: 'Configuración de Efipay incompleta en el backend.' });
     }
 
-    // Descripción que se verá en Efipay
     const description = `Pedido ${orderId} - Paytton Tires`;
 
-    // 🔹 Payload para Efipay
     const payload = {
       payment: {
         description,
@@ -38,22 +48,15 @@ export default async function handler(req, res) {
         checkout_type: 'redirect'
       },
       advanced_options: {
-        // referencia que luego usará el webhook para encontrar el pedido en Shopify
         references: [String(orderId)],
-
-        // URLs de retorno
         result_urls: {
           approved: 'https://mvyu4p-em.myshopify.com/pages/pago-exitoso',
           rejected: 'https://mvyu4p-em.myshopify.com/pages/pago-rechazado',
           pending:  'https://mvyu4p-em.myshopify.com/pages/pago-pendiente',
-          // 👇 aquí es donde Efipay llamará a tu webhook
           webhook:  'https://efipay-shopify-backend.vercel.app/api/efipay-webhook'
         },
-
         has_comments: false
       },
-
-      // sucursal (office) que te muestra Efipay en el panel
       office: Number(OFFICE_ID)
     };
 
@@ -90,7 +93,6 @@ export default async function handler(req, res) {
       });
     }
 
-    // Según doc: en redirect viene { saved, payment_id, url }
     if (!response.ok || !data.url) {
       console.error('Error al generar pago en Efipay:', data);
       return res.status(500).json({
@@ -100,7 +102,6 @@ export default async function handler(req, res) {
       });
     }
 
-    // ✅ Devolvemos el link de pago al frontend (Shopify)
     return res.status(200).json({
       paymentUrl: data.url,
       paymentId: data.payment_id
