@@ -124,7 +124,6 @@ export default async function handler(req, res) {
       });
     }
 
-    // ✅ Devolvemos el link de pago a Shopify
     return res.status(200).json({
       paymentUrl: data.url,
       paymentId: data.payment_id,
