@@ -7,41 +7,79 @@ export default async function handler(req, res) {
   }
 
   try {
-    const event = req.body || {};
-    console.log('Webhook recibido de EfiPay:', JSON.stringify(event, null, 2));
+    // Algunos proveedores mandan JSON, otros string
+    let event = req.body;
+    if (!event) {
+      event = {};
+    } else if (typeof event === 'string') {
+      try {
+        event = JSON.parse(event);
+      } catch (e) {
+        console.error('No se pudo parsear el body string como JSON:', e);
+        event = {};
+      }
+    }
 
-    // Aquí intentamos ser lo más flexibles posible con la estructura
-    const payment = event.payment || event.data || {};
-    const status = payment.status || event.status || null;
+    console.log('Webhook recibido de EfiPay (body parseado):', JSON.stringify(event, null, 2));
+    console.log('Headers del webhook:', JSON.stringify(req.headers, null, 2));
 
-    // Buscar la referencia (orderId de Shopify que tú mandaste)
+    const payment = event.payment || event.data || event || {};
+
+    const rawStatus = (payment.status || event.status || '').toString().toLowerCase();
+    const approvedStatuses = ['approved', 'aprobado', 'paid', 'pagado', 'success', 'succeeded'];
+    const isApproved = approvedStatuses.includes(rawStatus);
+
+    // ==========================
+    // OBTENER REFERENCIA DE PEDIDO
+    // ==========================
     let referenceOrderId = null;
+
+    // 1) Lo que intentábamos antes
     if (event.advanced_options && Array.isArray(event.advanced_options.references)) {
       referenceOrderId = event.advanced_options.references[0];
     } else if (event.references && Array.isArray(event.references)) {
       referenceOrderId = event.references[0];
     } else if (payment.references && Array.isArray(payment.references)) {
       referenceOrderId = payment.references[0];
+    } else if (payment.reference) {
+      referenceOrderId = payment.reference;
     }
 
-    const amount = payment.amount || null;
+    // 2) PLAN B → usar la descripción "Pedido 1006 - Paytton Tires"
+    if (!referenceOrderId) {
+      const desc = payment.description || event.description || '';
+      console.log('Descripción recibida en el pago:', desc);
 
-    if (!status || !referenceOrderId) {
-      console.error('Evento de EfiPay sin status o referencia:', { status, referenceOrderId });
-      return res.status(400).json({ error: 'Evento inválido: falta status o referencia' });
+      const match = desc.match(/(\d+)/);  // primer número que aparezca
+      if (match) {
+        referenceOrderId = match[1];     // "1006"
+      }
     }
 
-    // Solo procesamos pagos aprobados
-    if (status !== 'approved') {
-      console.log('Evento EfiPay ignorado, status no es approved:', status);
-      return res.status(200).json({ received: true, ignored: true });
+    const amount = payment.amount || event.amount || null;
+
+    console.log('Status crudo recibido:', rawStatus);
+    console.log('¿Es aprobado según nuestra lista?:', isApproved);
+    console.log('Referencia de pedido detectada:', referenceOrderId);
+    console.log('Monto recibido:', amount);
+
+    // Si NO hay referencia, no podemos mapear con Shopify
+    if (!referenceOrderId) {
+      console.error('No se pudo determinar referenceOrderId en el webhook');
+      return res.status(400).json({ error: 'Evento inválido: falta referencia de pedido' });
+    }
+
+    // Si el pago no está aprobado, no tocamos Shopify
+    if (!isApproved) {
+      console.log('Evento EfiPay no aprobado. No se actualiza Shopify. Status:', rawStatus);
+      return res.status(200).json({ received: true, approved: false });
     }
 
     console.log(`Pago APROBADO en EfiPay para referencia ${referenceOrderId} por valor ${amount}`);
 
     // ---- CONFIG SHOPIFY ----
     const shopDomain = process.env.SHOPIFY_STORE_DOMAIN;         // ej: mvyu4p-em.myshopify.com
-    const adminToken = process.env.SHOPIFY_ADMIN_API_TOKEN;      // tu token admin
+    const adminToken = process.env.SHOPIFY_ADMIN_API_TOKEN;      // token admin
     const apiVersion = process.env.SHOPIFY_ADMIN_API_VERSION || '2024-01';
 
     if (!shopDomain || !adminToken) {
@@ -49,7 +87,7 @@ export default async function handler(req, res) {
       return res.status(500).json({ error: 'Configuración de Shopify incompleta en backend' });
     }
 
-    // referenceOrderId viene como "1005" → lo convertimos a "#1005" para buscar por name
+    // referenceOrderId tipo "1006" → lo pasamos a "#1006"
     let orderName = String(referenceOrderId).trim();
     if (!orderName.startsWith('#')) {
       orderName = `#${orderName}`;
@@ -92,13 +130,13 @@ export default async function handler(req, res) {
     const orderId = order.id;
     console.log('Pedido encontrado en Shopify:', orderId, order.name, 'financial_status:', order.financial_status);
 
-    // Si ya está pagado, no hacemos nada
+    // Si ya está pagado, no repetimos
     if (order.financial_status === 'paid') {
       console.log('Pedido ya está marcado como pagado en Shopify. No se crea transacción nueva.');
       return res.status(200).json({ ok: true, alreadyPaid: true });
     }
 
-    // 2) Crear transacción de venta en Shopify para marcarlo como pagado
+    // 2) Crear transacción para marcarlo como pagado
     const txUrl = `https://${shopDomain}/admin/api/${apiVersion}/orders/${orderId}/transactions.json`;
 
     const txPayload = {
@@ -128,8 +166,7 @@ export default async function handler(req, res) {
       return res.status(500).json({ error: 'No se pudo registrar el pago en Shopify', raw: shopifyRaw });
     }
 
-    // Si llegamos aquí, Shopify debería marcar el pedido como pagado
-    return res.status(200).json({ ok: true });
+    return res.status(200).json({ ok: true, approved: true });
   } catch (err) {
     console.error('Error general en efipay-webhook:', err);
     return res.status(500).json({ error: 'Error interno en webhook de EfiPay' });
