@@ -1,145 +1,53 @@
-// api/create-efipay-payment.js
+export default async function handler(req, res) {
+  // 🔥 CONFIGURAR CORS
+  res.setHeader("Access-Control-Allow-Credentials", "true");
+  res.setHeader("Access-Control-Allow-Origin", "https://myu4p-em.myshopify.com"); 
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
-module.exports = async (req, res) => {
-  // ⭐ CORS abierto para que no haya líos con dominio
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-
-  // Preflight
-  if (req.method === 'OPTIONS') {
-    res.statusCode = 200;
-    return res.end();
+  if (req.method === "OPTIONS") {
+    return res.status(200).end();
   }
 
-  if (req.method !== 'POST') {
-    res.statusCode = 405;
-    return res.json({ error: 'Método no permitido' });
+  if (req.method !== "POST") {
+    return res.status(405).json({ error: "Método no permitido" });
   }
 
   try {
-    // Asegurarnos de parsear bien el body
-    let body = req.body;
-    if (!body) {
-      // En algunos runtimes viene en el stream, pero en Vercel normalmente no pasa.
-      // Por si acaso, lo dejamos así.
-      body = {};
-    }
-    if (typeof body === 'string') {
-      try {
-        body = JSON.parse(body);
-      } catch (e) {
-        console.error('Error parseando body como JSON:', e);
-        body = {};
-      }
+    const { amount, orderId } = req.body;
+
+    if (!amount || !orderId) {
+      return res.status(400).json({ error: "Faltan parámetros" });
     }
 
-    const { orderId, amount, currency, customer } = body || {};
-
-    if (!orderId || amount == null) {
-      res.statusCode = 400;
-      return res.json({ error: 'orderId y amount son obligatorios' });
-    }
-
-    const amountNumber = Number(amount);
-    if (Number.isNaN(amountNumber) || amountNumber <= 0) {
-      res.statusCode = 400;
-      return res.json({ error: 'amount debe ser un número mayor a 0' });
-    }
-
-    const baseUrl = process.env.EFIPAY_BASE_URL || 'https://app.efipay.co/api/v1';
-    const apiToken = process.env.EFIPAY_API_TOKEN;
-    const officeId = process.env.EFIPAY_OFFICE_ID;
-
-    if (!apiToken) {
-      res.statusCode = 500;
-      return res.json({ error: 'Falta EFIPAY_API_TOKEN en las variables de entorno' });
-    }
-
-    const webhookUrl = 'https://efipay-shopify-backend.vercel.app/api/efipay-webhook';
-
-    const payload = {
-      amount: amountNumber,
-      currency_type: currency || 'COP',
-      // office_id es opcional pero si lo tienes en env lo pasamos
-      ...(officeId ? { office_id: Number(officeId) } : {}),
-      description: `Pedido Shopify #${orderId}`,
-      advanced_option: {
-        references: [String(orderId)],
-        result_urls: {
-          pending: 'https://payttontires.com/pago-pendiente',
-          approved: 'https://payttontires.com/pago-aprobado',
-          webhook: webhookUrl
-        }
-      },
-      customer: {
-        name: customer?.name || 'Cliente Shopify',
-        email: customer?.email || ''
-      }
-    };
-
-    console.log('Payload a Efipay /checkout:', JSON.stringify(payload));
-
-    const response = await fetch(`${baseUrl}/checkout`, {
-      method: 'POST',
+    const response = await fetch("https://sag.efipay.co/api/v2/checkout", {
+      method: "POST",
       headers: {
-        Authorization: `Bearer ${apiToken}`,
-        'Content-Type': 'application/json'
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${process.env.EFIPAY_API_KEY}`,
       },
-      body: JSON.stringify(payload)
+      body: JSON.stringify({
+        amount,
+        currency: "COP",
+        reference: orderId,
+        response_urls: {
+          approved: "https://payttontires.com/pages/pago-exitoso",
+          pending: "https://payttontires.com/pages/pago-pendiente",
+          webhook: `${process.env.WEBHOOK_URL}/api/efipay-webhook`,
+        }
+      }),
     });
 
-    const raw = await response.text();
-    console.log('Respuesta cruda de Efipay /checkout:', raw);
+    const data = await response.json();
 
     if (!response.ok) {
-      res.statusCode = 500;
-      return res.json({
-        error: 'No se pudo crear el pago en Efipay',
-        status: response.status,
-        raw
-      });
+      return res.status(400).json({ error: "Error creando link", details: data });
     }
 
-    let data;
-    try {
-      data = JSON.parse(raw);
-    } catch (e) {
-      console.error('No se pudo parsear JSON de Efipay:', e);
-      res.statusCode = 500;
-      return res.json({
-        error: 'Respuesta de Efipay no es JSON válido',
-        raw
-      });
-    }
+    return res.status(200).json(data);
 
-    const paymentUrl =
-      data?.checkout?.payment_gateway?.url ||
-      data?.checkout?.url ||
-      data?.checkout_url ||
-      data?.url;
-
-    const transactionId =
-      data?.transaction?.transaction_id ||
-      data?.transaction_id ||
-      data?.checkout?.id;
-
-    if (!paymentUrl) {
-      res.statusCode = 500;
-      return res.json({
-        error: 'Efipay no devolvió una URL de pago (revisa raw para ver la respuesta completa)',
-        raw: data
-      });
-    }
-
-    res.statusCode = 200;
-    return res.json({
-      paymentUrl,
-      efipayTransactionId: transactionId || null
-    });
   } catch (error) {
-    console.error('Error en create-efipay-payment:', error);
-    res.statusCode = 500;
-    return res.json({ error: 'Error interno creando pago en Efipay' });
+    console.error("ERROR:", error);
+    return res.status(500).json({ error: "Error interno", details: error.message });
   }
-};
+}
