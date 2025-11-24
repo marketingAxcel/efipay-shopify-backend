@@ -1,13 +1,34 @@
 // api/create-efipay-payment.js
 
 module.exports = async (req, res) => {
+  // 🔹 CORS: permitir llamadas desde tu tienda Shopify
+  res.setHeader('Access-Control-Allow-Origin', 'https://myu4p-em.myshopify.com');
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
+  // Responder rápido las preflight OPTIONS
+  if (req.method === 'OPTIONS') {
+    res.statusCode = 200;
+    return res.end();
+  }
+
   if (req.method !== 'POST') {
     res.statusCode = 405;
     return res.json({ error: 'Método no permitido' });
   }
 
   try {
-    const { orderId, amount, currency, customer } = req.body || {};
+    // En Vercel, req.body puede venir como string si es JSON
+    let body = req.body;
+    if (typeof body === 'string') {
+      try {
+        body = JSON.parse(body);
+      } catch (e) {
+        body = {};
+      }
+    }
+
+    const { orderId, amount, currency, customer } = body || {};
 
     if (!orderId || amount == null) {
       res.statusCode = 400;
@@ -29,23 +50,19 @@ module.exports = async (req, res) => {
       return res.json({ error: 'Falta EFIPAY_API_TOKEN en las variables de entorno' });
     }
 
-    // 👉 Aquí va tu URL pública de Vercel para el webhook
+    // 👉 URL del webhook (ya desplegado en Vercel)
     const webhookUrl = 'https://efipay-shopify-backend.vercel.app/api/efipay-webhook';
 
-    // Payload para crear el checkout en Efipay.
-    // Ajusta los campos si tu implementación actual usa otros nombres/campos adicionales.
     const payload = {
       amount: amountNumber,
       currency_type: currency || 'COP',
-      office_id: Number(officeId),
+      office_id: officeId ? Number(officeId) : undefined,
       description: `Pedido Shopify #${orderId}`,
-      // Referencias y URLs de resultado (según docs de Efipay)
       advanced_option: {
-        // Guardamos el orderId de Shopify como referencia para leerlo luego en el webhook
         references: [String(orderId)],
         result_urls: {
-          pending: 'https://payttontires.com/pago-pendiente', // opcional, cámbialo si quieres
-          approved: 'https://payttontires.com/pago-aprobado', // opcional
+          pending: 'https://payttontires.com/pago-pendiente',
+          approved: 'https://payttontires.com/pago-aprobado',
           webhook: webhookUrl
         }
       },
@@ -74,10 +91,8 @@ module.exports = async (req, res) => {
     const data = await response.json();
     console.log('Respuesta Efipay /checkout:', JSON.stringify(data));
 
-    // ⚠️ Ajusta estas rutas según la respuesta REAL de tu API.
-    // Te dejo varias opciones encadenadas para que no pete aunque la clave sea distinta.
     const paymentUrl =
-      data?.checkout?.payment_gateway?.url || // ejemplo posible
+      data?.checkout?.payment_gateway?.url ||
       data?.checkout?.url ||
       data?.checkout_url ||
       data?.url;
@@ -94,9 +109,6 @@ module.exports = async (req, res) => {
         raw: data
       });
     }
-
-    // En este punto podrías guardar en una BD: { orderId, transactionId, status: 'pending' }
-    // pero como usamos "references" para guardar el orderId, podemos vivir sin BD por ahora.
 
     res.statusCode = 200;
     return res.json({
