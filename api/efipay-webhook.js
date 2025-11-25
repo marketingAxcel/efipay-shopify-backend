@@ -154,39 +154,54 @@ export default async function handler(req, res) {
       return res.status(200).json({ ok: true, alreadyPaid: true });
     }
 
-    // 5) Actualizar directamente el pedido a "paid"
-    const updateUrl = `https://${shopDomain}/admin/api/${apiVersion}/orders/${order.id}.json`;
+    // 5) (Opcional) ver transacciones actuales del pedido para debug
+    const txListUrl = `https://${shopDomain}/admin/api/${apiVersion}/orders/${order.id}/transactions.json`;
+    console.log('Listando transacciones actuales del pedido:', txListUrl);
 
-    const updatePayload = {
-      order: {
-        id: order.id,
-        financial_status: 'paid',
-      },
-    };
-
-    console.log('Actualizando pedido en Shopify a paid:', updateUrl, updatePayload);
-
-    const updateResp = await fetch(updateUrl, {
-      method: 'PUT',
+    const txListResp = await fetch(txListUrl, {
       headers: {
         'X-Shopify-Access-Token': adminToken,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify(updatePayload),
     });
 
-    const updateRaw = await updateResp.text();
-    console.log('Respuesta cruda de Shopify al actualizar pedido:', updateRaw);
+    const txListRaw = await txListResp.text();
+    console.log('Transacciones actuales del pedido en Shopify:', txListRaw);
 
-    if (!updateResp.ok) {
+    // 6) Crear transacción de captura para marcar como pagado
+    const captureUrl = `https://${shopDomain}/admin/api/${apiVersion}/orders/${order.id}/transactions.json`;
+
+    const capturePayload = {
+      transaction: {
+        kind: 'capture',
+        status: 'success',
+        amount: order.total_price, // "120000.00"
+      },
+    };
+
+    console.log('Creando transacción de captura en Shopify:', captureUrl, capturePayload);
+
+    const captureResp = await fetch(captureUrl, {
+      method: 'POST',
+      headers: {
+        'X-Shopify-Access-Token': adminToken,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(capturePayload),
+    });
+
+    const captureRaw = await captureResp.text();
+    console.log('Respuesta cruda de Shopify al crear transacción de captura:', captureRaw);
+
+    if (!captureResp.ok) {
       console.error(
-        'Error al actualizar el estado del pedido en Shopify:',
-        updateResp.status,
-        updateRaw
+        'Error al crear transacción de captura en Shopify:',
+        captureResp.status,
+        captureRaw
       );
       return res.status(500).json({
-        error: 'No se pudo actualizar el estado del pedido en Shopify',
-        raw: updateRaw,
+        error: 'No se pudo registrar la captura de pago en Shopify',
+        raw: captureRaw,
       });
     }
 
