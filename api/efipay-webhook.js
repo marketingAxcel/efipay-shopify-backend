@@ -56,11 +56,11 @@ export default async function handler(req, res) {
       if (referenceOrderId) return;
       if (typeof value === 'string' && value.toLowerCase().includes('pedido')) {
         const match = value.match(/(\d+)/);
-        if (match) referenceOrderId = match[1]; // "1008"
+        if (match) referenceOrderId = match[1]; // "1006"
       }
     });
 
-    // fallback: cualquier string únicamente numérica
+    // fallback: cualquier string sólo numérica
     if (!referenceOrderId) {
       deepScan(event, (key, value) => {
         if (referenceOrderId) return;
@@ -133,7 +133,9 @@ export default async function handler(req, res) {
       'order_number:',
       order.order_number,
       'financial_status:',
-      order.financial_status
+      order.financial_status,
+      'total_price:',
+      order.total_price
     );
 
     if (order.financial_status === 'paid') {
@@ -141,13 +143,13 @@ export default async function handler(req, res) {
       return res.status(200).json({ ok: true, alreadyPaid: true });
     }
 
-    // 5) Crear transacción de venta SIN amount → Shopify cobra el saldo pendiente
+    // 5) Crear transacción de venta USANDO el total_price del pedido
     const txUrl = `https://${shopDomain}/admin/api/${apiVersion}/orders/${order.id}/transactions.json`;
     const txPayload = {
       transaction: {
         kind: 'sale',
-        status: 'success'
-        // sin amount: Shopify usa el saldo pendiente del pedido
+        status: 'success',
+        amount: order.total_price   // 👈 usamos el monto de Shopify, no el de EfiPay
       }
     };
 
