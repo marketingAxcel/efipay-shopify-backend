@@ -39,7 +39,16 @@ export default async function handler(req, res) {
       }
     });
 
-    const approvedStatuses = ['approved', 'aprobado', 'aprobada', 'paid', 'pagado', 'success', 'succeeded'];
+    const approvedStatuses = [
+      'approved',
+      'aprobado',
+      'aprobada',
+      'paid',
+      'pagado',
+      'pagada',
+      'success',
+      'succeeded',
+    ];
     const isApproved = approvedStatuses.includes(rawStatus || '');
     console.log('STATUS DETECTADO:', rawStatus, '→ aprobado?:', isApproved);
 
@@ -98,8 +107,8 @@ export default async function handler(req, res) {
     const listResp = await fetch(listUrl, {
       headers: {
         'X-Shopify-Access-Token': adminToken,
-        'Content-Type': 'application/json'
-      }
+        'Content-Type': 'application/json',
+      },
     });
 
     const listRaw = await listResp.text();
@@ -119,11 +128,13 @@ export default async function handler(req, res) {
     }
 
     const orders = listData.orders || [];
-    const order = orders.find(o => o.order_number === orderNumberInt);
+    const order = orders.find((o) => o.order_number === orderNumberInt);
 
     if (!order) {
       console.error('No se encontró pedido con order_number', orderNumberInt);
-      return res.status(404).json({ error: `Pedido no encontrado para order_number ${orderNumberInt}` });
+      return res
+        .status(404)
+        .json({ error: `Pedido no encontrado para order_number ${orderNumberInt}` });
     }
 
     console.log(
@@ -139,37 +150,44 @@ export default async function handler(req, res) {
     );
 
     if (order.financial_status === 'paid') {
-      console.log('Pedido ya está marcado como pagado. No se crea transacción nueva.');
+      console.log('Pedido ya está marcado como pagado. No se actualiza.');
       return res.status(200).json({ ok: true, alreadyPaid: true });
     }
 
-    // 5) Crear transacción de venta USANDO el total_price del pedido
-    const txUrl = `https://${shopDomain}/admin/api/${apiVersion}/orders/${order.id}/transactions.json`;
-    const txPayload = {
-      transaction: {
-        kind: 'sale',
-        status: 'success',
-        amount: order.total_price   // 👈 usamos el monto de Shopify, no el de EfiPay
-      }
+    // 5) Actualizar directamente el pedido a "paid"
+    const updateUrl = `https://${shopDomain}/admin/api/${apiVersion}/orders/${order.id}.json`;
+
+    const updatePayload = {
+      order: {
+        id: order.id,
+        financial_status: 'paid',
+      },
     };
 
-    console.log('Creando transacción en Shopify:', txUrl, txPayload);
+    console.log('Actualizando pedido en Shopify a paid:', updateUrl, updatePayload);
 
-    const shopifyResp = await fetch(txUrl, {
-      method: 'POST',
+    const updateResp = await fetch(updateUrl, {
+      method: 'PUT',
       headers: {
         'X-Shopify-Access-Token': adminToken,
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
       },
-      body: JSON.stringify(txPayload)
+      body: JSON.stringify(updatePayload),
     });
 
-    const shopifyRaw = await shopifyResp.text();
-    console.log('Respuesta cruda de Shopify al crear transacción:', shopifyRaw);
+    const updateRaw = await updateResp.text();
+    console.log('Respuesta cruda de Shopify al actualizar pedido:', updateRaw);
 
-    if (!shopifyResp.ok) {
-      console.error('Error al registrar el pago en Shopify:', shopifyResp.status, shopifyRaw);
-      return res.status(500).json({ error: 'No se pudo registrar el pago en Shopify', raw: shopifyRaw });
+    if (!updateResp.ok) {
+      console.error(
+        'Error al actualizar el estado del pedido en Shopify:',
+        updateResp.status,
+        updateRaw
+      );
+      return res.status(500).json({
+        error: 'No se pudo actualizar el estado del pedido en Shopify',
+        raw: updateRaw,
+      });
     }
 
     return res.status(200).json({ ok: true, approved: true });
