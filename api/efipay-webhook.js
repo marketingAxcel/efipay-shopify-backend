@@ -39,7 +39,7 @@ export default async function handler(req, res) {
       }
     });
 
-    const approvedStatuses = ['approved', 'aprobado', 'paid', 'pagado', 'success', 'succeeded'];
+    const approvedStatuses = ['approved', 'aprobado', 'aprobada', 'paid', 'pagado', 'success', 'succeeded'];
     const isApproved = approvedStatuses.includes(rawStatus || '');
     console.log('STATUS DETECTADO:', rawStatus, '→ aprobado?:', isApproved);
 
