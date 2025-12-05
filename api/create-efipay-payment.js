@@ -1,20 +1,6 @@
-// api/create-efipay-payment.js
-
 export default async function handler(req, res) {
-  const allowedOrigin = 'https://mvyu4p-em.myshopify.com';
-
-  // CORS básico
-  res.setHeader('Access-Control-Allow-Origin', allowedOrigin);
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-
-  // Responder preflight
-  if (req.method === 'OPTIONS') {
-    return res.status(200).end();
-  }
-
   if (req.method !== 'POST') {
-    res.setHeader('Allow', 'POST, OPTIONS');
+    res.setHeader('Allow', 'POST');
     return res.status(405).json({ error: 'Método no permitido' });
   }
 
@@ -27,9 +13,12 @@ export default async function handler(req, res) {
         .json({ error: 'orderId y amount son obligatorios.' });
     }
 
-    const EFIPAY_TOKEN = process.env.EFIPAY_API_TOKEN;   // ACCESS_TOKEN de Efipay
+    const EFIPAY_TOKEN = process.env.EFIPAY_API_TOKEN;   
     const BASE_URL = process.env.EFIPAY_BASE_URL || 'https://sag.efipay.co/api/v1';
     const OFFICE_ID = process.env.EFIPAY_OFFICE_ID;
+
+    const FRONTEND_BASE_URL =
+      process.env.SHOPIFY_STOREFRONT_URL || 'https://tienda.payttontires.com';
 
     if (!EFIPAY_TOKEN || !OFFICE_ID) {
       console.error('Faltan variables de entorno EFIPAY_API_TOKEN o EFIPAY_OFFICE_ID');
@@ -43,20 +32,24 @@ export default async function handler(req, res) {
     const payload = {
       payment: {
         description,
-        amount,                  // número, ej: 120000
-        currency_type: currency, // 'COP'
+        amount,                  
+        currency_type: currency, 
         checkout_type: 'redirect'
       },
       advanced_options: {
+        
         references: [String(orderId)],
+
         result_urls: {
-          approved: 'https://mvyu4p-em.myshopify.com/pages/pago-exitoso',
-          rejected: 'https://mvyu4p-em.myshopify.com/pages/pago-rechazado',
-          pending:  'https://mvyu4p-em.myshopify.com/pages/pago-pendiente',
-          webhook:  'https://efipay-shopify-backend.vercel.app/api/efipay-webhook'
+          approved: `${FRONTEND_BASE_URL}/pages/pago-exitoso`,
+          rejected: `${FRONTEND_BASE_URL}/pages/pago-rechazado`,
+          pending:  `${FRONTEND_BASE_URL}/pages/pago-pendiente`,
+          webhook: 'https://efipay-shopify-backend.vercel.app/api/efipay-webhook'
         },
+
         has_comments: false
       },
+
       office: Number(OFFICE_ID)
     };
 
